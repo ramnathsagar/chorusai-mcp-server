@@ -1,0 +1,20 @@
+node_modules/
+.DS_Store
+*.log
+*.tmp
+.env
+.env.*
+coverage/
+.nyc_output/
+
+# Local MCP/client configuration may contain credentials.
+.claude/
+.codex/
+claude_desktop_config.json
+
+# Local Chorus data and historical artifacts. Never commit customer data.
+engagements.json
+files.zip
+tests/fixtures/engagements-page1.json
+tests/probe-transcript-endpoint.sh
+tests/probe-transcript-v2.sh

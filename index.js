@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// chorusai-mcp-server v1.2 — local, read-only MCP server for account-centric Chorus (ZoomInfo) v3
-// conversation data (metadata + AI summaries + action items). Verbatim transcripts = v2.
+// chorusai-mcp-server — local, read-only MCP server for account-centric Chorus (ZoomInfo)
+// conversation data: v3 engagement summaries plus selected v1 verbatim transcripts.
 //
 // v1.2 adds: a persistent on-disk store (store.js) so account queries stop re-scanning the whole
 // engagements firehose on every call and after every Claude Desktop restart, plus fixes to match
@@ -10,6 +10,7 @@
 // Env:
 //   CHORUS_API_KEY          (required)
 //   CHORUS_BASE_URL         (default https://chorus.ai/v3)
+//   CHORUS_TRANSCRIPT_BASE_URL (default https://chorus.ai/api/v1)
 //   CHORUS_PAGE_PARAM       (default continuation_key)
 //   CHORUS_MAX_PAGES        (default 40) — per-call safety cap, keeps any one tool call fast.
 //   CHORUS_PAGE_DELAY_MS    (default 120)
@@ -24,8 +25,26 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { groupByAccount, detailRow } from "./lib.js";
-import { apiGetRaw, fetchEngagementsByIds, inRange, sleep, PAGE_DELAY_MS, MAX_PAGES, BASE_URL } from "./chorus-client.js";
+import {
+  apiGetRaw,
+  fetchEngagementsByIds,
+  fetchTranscriptConversation,
+  inRange,
+  sleep,
+  PAGE_DELAY_MS,
+  MAX_PAGES,
+  BASE_URL,
+  TRANSCRIPT_BASE_URL,
+} from "./chorus-client.js";
 import { ensureFresh, getAllEngagements, getByIds, upsertAndPersist, storeStats } from "./store.js";
+import {
+  DEFAULT_MAX_CHARACTERS,
+  DEFAULT_MAX_SEGMENTS,
+  MAX_CHARACTERS,
+  MAX_SEGMENTS,
+  MAX_TRANSCRIPT_IDS,
+  fetchTranscriptBatch,
+} from "./transcript.js";
 
 const jsonContent = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj, null, 2) }] });
 const dateToMs = (s) => { const d = new Date(s); return isNaN(d) ? null : d.getTime(); };
@@ -119,7 +138,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        accounts: { type: "array", items: { type: "string" }, description: 'Names and/or domains, e.g. ["ADT","Life360","acme.com"].' },
+        accounts: { type: "array", items: { type: "string" }, description: 'Names and/or domains, e.g. ["Acme Robotics","acme.example"].' },
         fit_label: { type: "string", enum: ["good_fit", "bad_fit", "unlabeled"] },
         since: { type: "string", description: "ISO date lower bound, e.g. 2026-01-01 (optional)." },
         until: { type: "string", description: "ISO date upper bound (optional)." },
@@ -169,7 +188,7 @@ const TOOLS = [
   },
   {
     name: "get_account_brief",
-    description: "The main ICP tool. For the given accounts (names/domains), return the FULL distilled record per matched engagement across all stages — AI meeting_summary, action_items, participants, opportunity — bundled per account, chronological. Optional since/until date bounds. Reads from the local persisted store (see max_age_minutes/force_refresh). Verbatim transcripts not included (v2).",
+    description: "The main ICP tool. For the given accounts (names/domains), return the FULL distilled record per matched engagement across all stages — AI meeting_summary, action_items, participants, opportunity — bundled per account, chronological. Optional since/until date bounds. Reads from the local persisted store (see max_age_minutes/force_refresh). Use get_transcript separately for selected verbatim evidence.",
     inputSchema: {
       type: "object",
       properties: {
@@ -233,7 +252,7 @@ const TOOLS = [
         notes: [
           syncNote(sync),
           trimmedAny ? "Some accounts trimmed to max_engagements_per_account." : null,
-          "v1 provides AI summaries + action items, not verbatim transcripts.",
+          "This tool returns Chorus AI summaries + action items; use get_transcript separately for selected verbatim evidence.",
         ].filter(Boolean),
       });
     },
@@ -265,9 +284,123 @@ const TOOLS = [
       return jsonContent({ engagements: out, api_calls_this_call: requestCounter.count });
     },
   },
+  {
+    name: "get_transcript",
+    description: "Retrieve bounded, verbatim transcript segments for up to 10 selected recorded engagements. Uses the official read-only v1 conversation endpoint, preserves Chorus speaker attribution and timestamps, classifies customer/internal/unknown speech, and returns per-engagement partial errors. Transcripts are never written to the engagement cache or any other local store.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        engagement_ids: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: MAX_TRANSCRIPT_IDS,
+          description: `One to ${MAX_TRANSCRIPT_IDS} v3 engagement IDs returned by the account/detail tools.`,
+        },
+        customer_speakers_only: {
+          type: "boolean",
+          default: false,
+          description: "Return only segments confidently classified as customer-side. Unknown speakers are excluded.",
+        },
+        include_internal_speakers: {
+          type: "boolean",
+          default: true,
+          description: "When false, remove internal/rep segments but preserve customer and unknown segments. Ignored when customer_speakers_only=true.",
+        },
+        include_timestamps: {
+          type: "boolean",
+          default: true,
+          description: "Include absolute ISO timestamps and relative seconds for each segment.",
+        },
+        segment_cursor: {
+          type: "integer",
+          minimum: 0,
+          default: 0,
+          description: "Zero-based cursor into the filtered transcript of each requested engagement.",
+        },
+        max_segments_per_engagement: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_SEGMENTS,
+          default: DEFAULT_MAX_SEGMENTS,
+        },
+        max_characters_per_engagement: {
+          type: "integer",
+          minimum: 1000,
+          maximum: MAX_CHARACTERS,
+          default: DEFAULT_MAX_CHARACTERS,
+          description: "Character budget applied at segment boundaries; a single oversized first segment is returned as a marked verbatim prefix.",
+        },
+      },
+      required: ["engagement_ids"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const ids = Array.from(new Set((args.engagement_ids || []).map((id) => String(id).trim()).filter(Boolean)));
+      if (!ids.length) throw new Error("Provide at least one engagement_id.");
+      if (ids.length > MAX_TRANSCRIPT_IDS) throw new Error(`At most ${MAX_TRANSCRIPT_IDS} engagement_ids may be requested at once.`);
+
+      const requestCounter = { count: 0 };
+      const { found, missing } = await getByIds(ids);
+      let fetched = [];
+      if (missing.length) {
+        try {
+          fetched = await fetchEngagementsByIds(missing, { requestCounter });
+          if (fetched.length) await upsertAndPersist(fetched);
+        } catch {
+          // Transcript retrieval remains independently useful when v3 metadata is unavailable.
+          fetched = [];
+        }
+      }
+      const metadataById = new Map();
+      for (const engagement of [...found, ...fetched]) {
+        if (engagement?.engagement_id) metadataById.set(String(engagement.engagement_id), engagement);
+      }
+
+      const options = {
+        customerSpeakersOnly: args.customer_speakers_only === true,
+        includeInternalSpeakers: args.include_internal_speakers !== false,
+        includeTimestamps: args.include_timestamps !== false,
+        segmentCursor: Math.max(0, Number(args.segment_cursor) || 0),
+        maxSegments: Math.min(MAX_SEGMENTS, Math.max(1, Number(args.max_segments_per_engagement) || DEFAULT_MAX_SEGMENTS)),
+        maxCharacters: Math.min(MAX_CHARACTERS, Math.max(1_000, Number(args.max_characters_per_engagement) || DEFAULT_MAX_CHARACTERS)),
+      };
+      const batch = await fetchTranscriptBatch(
+        ids,
+        metadataById,
+        options,
+        (id) => fetchTranscriptConversation(id, { requestCounter }),
+      );
+      return jsonContent({
+        requested_engagement_ids: ids,
+        options: {
+          customer_speakers_only: options.customerSpeakersOnly,
+          include_internal_speakers: options.includeInternalSpeakers,
+          include_timestamps: options.includeTimestamps,
+          segment_cursor: options.segmentCursor,
+          max_segments_per_engagement: options.maxSegments,
+          max_characters_per_engagement: options.maxCharacters,
+        },
+        source: {
+          api_version: "v1",
+          endpoint: `${TRANSCRIPT_BASE_URL}/conversations/:id`,
+          official_field: "recording.utterances",
+          transcript_persisted: false,
+        },
+        transcripts: batch.transcripts,
+        api_calls_this_call: requestCounter.count,
+        rate_limit: batch.rate_limit || "no rate-limit headers exposed by Chorus on these responses",
+        notes: [
+          "verbatim_text is copied from Chorus recording.utterances; no paraphrased interpretation is generated by this tool.",
+          "Speaker classification is explicit and may be unknown when Chorus metadata is missing or ambiguous.",
+          "A 404 cannot distinguish absent, private, and otherwise inaccessible recordings because Chorus omits private recordings from API responses.",
+        ],
+      });
+    },
+  },
 ];
 
-const server = new Server({ name: "chorusai-mcp-server", version: "1.2.0" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "chorusai-mcp-server", version: "1.3.0" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }));
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const tool = TOOLS.find((t) => t.name === req.params.name);
@@ -278,4 +411,4 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error("chorusai-mcp-server v1.2 running (stdio). Tools: chorus_health, diagnose_filters, find_account_conversations, get_account_brief, get_engagement_detail.");
+console.error("chorusai-mcp-server v1.3 running (stdio). Tools: chorus_health, diagnose_filters, find_account_conversations, get_account_brief, get_engagement_detail, get_transcript.");

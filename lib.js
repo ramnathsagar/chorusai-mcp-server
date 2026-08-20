@@ -36,7 +36,7 @@ export function toISO(dt) {
 
 /**
  * Decide whether an engagement belongs to one of the requested accounts.
- * Requested entries may be display names ("Atlassian") or domains ("acme.com").
+ * Requested entries may be display names ("Acme Robotics") or domains ("acme.example").
  * Returns the matched requested-token (original casing) or null.
  */
 export function matchEngagement(engagement, requested) {

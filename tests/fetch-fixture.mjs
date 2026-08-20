@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// fetch-fixture.mjs — pulls ONE live page of /v3/engagements (read-only) and saves it as a test
-// fixture. Reads CHORUS_API_KEY from the Claude Desktop config (or the environment, if already
-// set). Never logs the key.
+// fetch-fixture.mjs — optional local diagnostics only. Pulls ONE live page of /v3/engagements
+// (read-only) into an ignored file. The committed test suite uses synthetic fixtures instead.
+// This output contains customer data: never stage, commit, upload, or share it.
 //
 //   node tests/fetch-fixture.mjs
 //

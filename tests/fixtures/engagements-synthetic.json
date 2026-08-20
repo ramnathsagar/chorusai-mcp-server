@@ -1,0 +1,52 @@
+{
+  "engagements": [
+    {
+      "engagement_id": "SYNTH-ENG-001",
+      "engagement_type": "meeting",
+      "processing_state": "done",
+      "date_time": 1704067200,
+      "duration": 1800,
+      "no_show": false,
+      "subject": "Synthetic discovery call",
+      "account_name": "Acme Robotics",
+      "opportunity_name": "Acme Evaluation",
+      "meeting_summary": "Synthetic summary about a fictional evaluation.",
+      "action_items": ["Send the synthetic architecture diagram."],
+      "participants": [
+        { "name": "Alex Seller", "type": "rep", "company_name": "SellerCo", "email": "alex@seller.example" },
+        { "name": "Jordan Buyer", "type": "prospect", "company_name": "Acme Robotics, Inc.", "email": "jordan@acme.example" }
+      ]
+    },
+    {
+      "engagement_id": "SYNTH-ENG-002",
+      "engagement_type": "meeting",
+      "processing_state": "done",
+      "date_time": 1704153600,
+      "duration": 1200,
+      "no_show": false,
+      "subject": "Synthetic technical review",
+      "account_name": "Acme Robotics",
+      "opportunity_name": "Acme Evaluation",
+      "meeting_summary": null,
+      "action_items": [],
+      "participants": [
+        { "name": "Taylor Seller", "type": "rep", "company_name": "SellerCo", "email": "taylor@seller.example" },
+        { "name": "Morgan Engineer", "type": "prospect", "company_name": "Acme Robotics LLC", "email": "morgan@acme.example" }
+      ]
+    },
+    {
+      "engagement_id": "SYNTH-ENG-003",
+      "engagement_type": "email",
+      "processing_state": "done",
+      "date_time": 1704240000,
+      "duration": 0,
+      "no_show": false,
+      "subject": "Synthetic follow-up",
+      "account_name": "Beta Labs",
+      "participants": [
+        { "name": "Alex Seller", "type": "rep", "company_name": "SellerCo", "email": "alex@seller.example" },
+        { "name": "Riley Buyer", "type": "prospect", "company_name": "Beta Labs", "email": "riley@beta.example" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "data": {
+    "id": "SYNTH-ENG-001",
+    "type": "recording",
+    "attributes": {
+      "name": "Synthetic discovery call",
+      "status": "done",
+      "language": "en",
+      "private": false,
+      "account": { "id": "SYNTH-ACCOUNT-1", "name": "Acme Robotics" },
+      "deal": { "id": "SYNTH-DEAL-1", "name": "Acme Evaluation" },
+      "participants": [
+        {
+          "person_id": 101,
+          "zi_person_id": null,
+          "name": "Jordan Buyer",
+          "title": "Operations Lead",
+          "company_name": "Acme Robotics",
+          "email": "jordan@acme.example",
+          "type": "prospect",
+          "is_my_team": false
+        },
+        {
+          "person_id": 202,
+          "zi_person_id": null,
+          "name": "Alex Seller",
+          "title": "Account Executive",
+          "company_name": "SellerCo",
+          "email": "alex@seller.example",
+          "type": "rep",
+          "is_my_team": true
+        },
+        {
+          "person_id": 303,
+          "zi_person_id": null,
+          "name": "Guest Speaker",
+          "title": null,
+          "company_name": null,
+          "email": null,
+          "type": "unknown",
+          "is_my_team": null
+        }
+      ],
+      "recording": {
+        "duration": 1800.5,
+        "start_time": "2024-01-01T10:00:00.000Z",
+        "utterances": [
+          {
+            "id": "SYNTH-UTT-3",
+            "index": 2,
+            "date_time": "2024-01-01T10:00:10.000Z",
+            "snippet_time": 10,
+            "snippet_length": 4,
+            "snippet_word_count": 8,
+            "speaker_id": 202,
+            "participant": 202,
+            "speaker_name": "Alex Seller",
+            "speaker_type": "rep",
+            "snippet": "How are you handling that process today?",
+            "engaging": true,
+            "expired": false
+          },
+          {
+            "id": "SYNTH-UTT-1",
+            "index": 0,
+            "date_time": "2024-01-01T10:00:01.000Z",
+            "snippet_time": 1,
+            "snippet_length": 5,
+            "snippet_word_count": 10,
+            "speaker_id": 101,
+            "participant": 101,
+            "speaker_name": "Jordan Buyer",
+            "speaker_type": "customer",
+            "snippet": "We spend hours reconciling the same records every Friday.",
+            "engaging": true,
+            "expired": false
+          },
+          {
+            "id": "SYNTH-UTT-4",
+            "index": 3,
+            "date_time": "2024-01-01T10:00:15.000Z",
+            "snippet_time": 15,
+            "snippet_length": 3,
+            "snippet_word_count": 5,
+            "speaker_id": 303,
+            "participant": 303,
+            "speaker_name": "Guest Speaker",
+            "speaker_type": null,
+            "snippet": "I can add some context.",
+            "engaging": false,
+            "expired": false
+          },
+          {
+            "id": "SYNTH-UTT-2",
+            "index": 1,
+            "date_time": "2024-01-01T10:00:06.000Z",
+            "snippet_time": 6,
+            "snippet_length": 4,
+            "snippet_word_count": 8,
+            "speaker_id": 101,
+            "participant": 101,
+            "speaker_name": "Jordan Buyer",
+            "speaker_type": null,
+            "snippet": "The manual review delays our monthly close.",
+            "engaging": true,
+            "expired": false
+          }
+        ]
+      }
+    }
+  }
+}

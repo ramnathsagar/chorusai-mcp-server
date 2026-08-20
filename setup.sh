@@ -33,5 +33,5 @@ cat <<EOF
 }
 
 Then in a chat: "Use chorus_health to check the connection", or
-"Use get_account_brief for Atlassian and Life360 (good fit) and acme.com (bad fit)."
+"Use get_account_brief for Acme Robotics and acme.example."
 EOF

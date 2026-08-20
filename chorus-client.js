@@ -1,10 +1,11 @@
-// chorus-client.js — thin GET-only client for the Chorus (ZoomInfo) v3 API.
+// chorus-client.js — thin GET-only client for the Chorus (ZoomInfo) APIs.
 // Shared by index.js (live tool calls) and store.js (background sync). Read-only: no writes,
 // no deletes, never logs or persists the API key.
 //
 // Env:
 //   CHORUS_API_KEY    (required)
 //   CHORUS_BASE_URL   (default https://chorus.ai/v3)
+//   CHORUS_TRANSCRIPT_BASE_URL (default https://chorus.ai/api/v1)
 //   CHORUS_PAGE_PARAM (default continuation_key)
 //   CHORUS_MAX_PAGES  (default 40) — safety cap on pages fetched in a SINGLE fetchEngagements
 //                      call, so any one tool call stays comfortably under an MCP client's request
@@ -15,6 +16,7 @@
 
 const API_KEY = process.env.CHORUS_API_KEY;
 export const BASE_URL = (process.env.CHORUS_BASE_URL || "https://chorus.ai/v3").replace(/\/+$/, "");
+export const TRANSCRIPT_BASE_URL = (process.env.CHORUS_TRANSCRIPT_BASE_URL || "https://chorus.ai/api/v1").replace(/\/+$/, "");
 export const PAGE_PARAM = process.env.CHORUS_PAGE_PARAM || "continuation_key";
 export const MAX_PAGES = Math.max(1, parseInt(process.env.CHORUS_MAX_PAGES || "40", 10));
 export const PAGE_DELAY_MS = Math.max(0, parseInt(process.env.CHORUS_PAGE_DELAY_MS || "120", 10));
@@ -25,6 +27,21 @@ if (!API_KEY) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export const TRANSCRIPT_FIELDS = [
+  "name",
+  "status",
+  "language",
+  "private",
+  "account",
+  "deal",
+  "owner",
+  "participants",
+  "recording",
+  "recording.duration",
+  "recording.start_time",
+  "recording.utterances",
+].join(",");
 
 export function rateHeaders(headers) {
   const h = (k) => headers.get(k);
@@ -37,10 +54,25 @@ export function rateHeaders(headers) {
   return Object.values(out).every((v) => v === null) ? null : out;
 }
 
-export async function apiGetRaw(path, params = {}, { retryOn429 = true } = {}) {
-  const url = new URL(`${BASE_URL}/${path.replace(/^\/+/, "")}`);
+/** Shared GET implementation for both the v3 engagement API and the v1 conversation endpoint.
+ * `captureNonJson` is disabled for transcript requests so an unexpected response can never be
+ * copied into an error object or log. */
+export async function apiGetRawAt(
+  baseUrl,
+  path,
+  params = {},
+  {
+    retryOn429 = true,
+    accept = "application/json",
+    captureNonJson = true,
+    fetchImpl = globalThis.fetch,
+    sleepFn = sleep,
+    apiKey = API_KEY,
+  } = {},
+) {
+  const url = new URL(`${baseUrl}/${path.replace(/^\/+/, "")}`);
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
-  const res = await fetch(url, { method: "GET", headers: { Authorization: API_KEY, Accept: "application/json" } });
+  const res = await fetchImpl(url, { method: "GET", headers: { Authorization: apiKey, Accept: accept } });
   const rate = rateHeaders(res.headers);
   if (res.status === 429 && retryOn429) {
     let waitMs = 2000;
@@ -49,13 +81,24 @@ export async function apiGetRaw(path, params = {}, { retryOn429 = true } = {}) {
     if (ra && !isNaN(Number(ra))) waitMs = Number(ra) * 1000;
     else if (rr && !isNaN(Number(rr))) waitMs = Number(rr) * 1000;
     waitMs = Math.min(Math.max(waitMs, 1000), 30000);
-    await sleep(waitMs);
-    return apiGetRaw(path, params, { retryOn429: false });
+    await sleepFn(waitMs);
+    return apiGetRawAt(baseUrl, path, params, {
+      retryOn429: false,
+      accept,
+      captureNonJson,
+      fetchImpl,
+      sleepFn,
+      apiKey,
+    });
   }
   const text = await res.text();
   let body = null;
-  try { body = text ? JSON.parse(text) : null; } catch { body = { _nonjson: text.slice(0, 300) }; }
+  try { body = text ? JSON.parse(text) : null; } catch { body = captureNonJson ? { _nonjson: text.slice(0, 300) } : { _nonjson: true }; }
   return { status: res.status, headers: res.headers, rate, body };
+}
+
+export async function apiGetRaw(path, params = {}, options = {}) {
+  return apiGetRawAt(BASE_URL, path, params, options);
 }
 
 export async function apiGet(path, params = {}) {
@@ -134,4 +177,25 @@ export async function fetchEngagementsByIds(ids, { requestCounter = null } = {})
   const body = await apiGet("engagements", { engagement_id: ids.join(",") });
   const list = Array.isArray(body?.engagements) ? body.engagements : [];
   return list;
+}
+
+/** Fetch a single transcript-bearing v1 conversation. The official endpoint returns the full
+ * utterance list in one response; MCP response pagination is therefore applied locally after
+ * retrieval rather than sent to Chorus. */
+export async function fetchTranscriptConversation(
+  engagementId,
+  { requestCounter = null, fetchImpl = globalThis.fetch, sleepFn = sleep } = {},
+) {
+  if (requestCounter) requestCounter.count++;
+  return apiGetRawAt(
+    TRANSCRIPT_BASE_URL,
+    `conversations/${encodeURIComponent(String(engagementId))}`,
+    { fields: TRANSCRIPT_FIELDS },
+    {
+      accept: "application/vnd.api+json",
+      captureNonJson: false,
+      fetchImpl,
+      sleepFn,
+    },
+  );
 }

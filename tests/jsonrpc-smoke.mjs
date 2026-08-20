@@ -13,17 +13,38 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readChorusApiKeyFromDesktopConfig } from "./read-key.mjs";
+import { matchEngagement } from "../lib.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INDEX_JS = join(__dirname, "..", "index.js");
-const SCRATCH_DIR = process.env.CHORUS_TEST_SCRATCH_DIR || "/private/tmp/claude-501/-Users-ramnath-chorus-mcp/88c4f948-adf5-4e32-8a2a-9db3392102c9/scratchpad";
+const OWNS_SCRATCH_DIR = !process.env.CHORUS_TEST_SCRATCH_DIR;
+const SCRATCH_DIR = process.env.CHORUS_TEST_SCRATCH_DIR || mkdtempSync(join(tmpdir(), "chorus-mcp-live-"));
 const TEST_STORE_PATH = join(SCRATCH_DIR, `smoke-store-${process.pid}.json`);
+const cleanup = () => {
+  if (OWNS_SCRATCH_DIR) rmSync(SCRATCH_DIR, { recursive: true, force: true });
+  else rmSync(TEST_STORE_PATH, { force: true });
+};
+process.once("exit", cleanup);
 
 const API_KEY = readChorusApiKeyFromDesktopConfig();
+process.env.CHORUS_API_KEY ??= API_KEY;
+const { apiGet } = await import("../chorus-client.js");
+const samplePage = await apiGet("engagements", { engagement_type: "meeting" });
+const sampleMeeting = (samplePage.engagements || []).find((e) =>
+  e?.account_name
+  && e?.meeting_summary
+  && e?.processing_state === "done"
+  && Number(e?.duration) > 0
+  && !e?.no_show
+  && matchEngagement(e, [e.account_name]) === e.account_name,
+) || (samplePage.engagements || []).find((e) => e?.account_name && matchEngagement(e, [e.account_name]) === e.account_name);
+if (!sampleMeeting?.account_name) throw new Error("Live test could not select an accessible account without printing customer metadata.");
+const LIVE_ACCOUNT = sampleMeeting.account_name;
 
 let passCount = 0, failCount = 0;
 function check(label, cond, extra) {
@@ -58,7 +79,7 @@ let { client: clientA, transport: transportA } = await connect();
 
 const toolsList = await clientA.listTools();
 const toolNames = toolsList.tools.map((t) => t.name).sort();
-check("tools/list returns all 5 tools", JSON.stringify(toolNames) === JSON.stringify(["chorus_health", "diagnose_filters", "find_account_conversations", "get_account_brief", "get_engagement_detail"].sort()), toolNames);
+check("tools/list returns all 6 tools", JSON.stringify(toolNames) === JSON.stringify(["chorus_health", "diagnose_filters", "find_account_conversations", "get_account_brief", "get_engagement_detail", "get_transcript"].sort()), toolNames);
 
 console.log("\n-- chorus_health (empty store expected) --");
 const health1 = await callTool(clientA, "chorus_health");
@@ -79,7 +100,7 @@ let iterations = 0;
 const MAX_ITERATIONS = 15; // 150-page target / 40-page-per-call default ~= 4, generous safety margin
 while (iterations < MAX_ITERATIONS) {
   iterations++;
-  lastResult = await callTool(clientA, "find_account_conversations", { accounts: ["Atlassian"] });
+  lastResult = await callTool(clientA, "find_account_conversations", { accounts: [LIVE_ACCOUNT] });
   const s = lastResult.store;
   console.log(`  call ${iterations}: source=${s.source} pages=${s.pages_fetched_this_call} backfill_pages_done=${s.backfill_pages_done} backfill_complete=${s.backfill_complete} api_calls=${s.api_calls_this_call} capped=${s.capped}`);
   check(`backfill call ${iterations} triggers a sync while incomplete`, s.source.startsWith("synced"), s);
@@ -88,29 +109,51 @@ while (iterations < MAX_ITERATIONS) {
   if (s.backfill_complete) break;
 }
 check("backfill_complete reached within a bounded number of calls", lastResult.store.backfill_complete === true, { iterations, lastStore: lastResult.store });
-check("cold backfill finds Atlassian engagements", lastResult.accounts.some((a) => a.matched_as === "Atlassian" && a.engagements.length > 0), lastResult.accounts.map((a) => a.account));
+check("cold backfill finds the selected accessible account", lastResult.accounts.some((a) => a.matched_as === LIVE_ACCOUNT && a.engagements.length > 0));
 console.log(`  backfill finished after ${iterations} call(s), ${totalBackfillApiCalls} total API calls, record_count=${lastResult.store.record_count}`);
 const coldMatchCount = lastResult.accounts.reduce((n, a) => n + a.engagements.length, 0);
 
 console.log("\n-- find_account_conversations: WARM (backfill done, expect zero API calls) --");
-const warm = await callTool(clientA, "find_account_conversations", { accounts: ["Atlassian"] });
+const warm = await callTool(clientA, "find_account_conversations", { accounts: [LIVE_ACCOUNT] });
 check("warm call reads from cache", warm.store.source === "cache", warm.store);
 check("warm call makes exactly 0 API calls", warm.store.api_calls_this_call === 0, warm.store);
 const warmMatchCount = warm.accounts.reduce((n, a) => n + a.engagements.length, 0);
 check("warm results match backfilled results exactly", warmMatchCount === coldMatchCount, { warmMatchCount, coldMatchCount });
 
 console.log("\n-- get_account_brief: full ICP bundle (cache) --");
-const brief = await callTool(clientA, "get_account_brief", { accounts: ["Atlassian"] });
+const brief = await callTool(clientA, "get_account_brief", { accounts: [LIVE_ACCOUNT] });
 check("get_account_brief reuses cache (0 API calls)", brief.store.api_calls_this_call === 0, brief.store);
 const withSummary = brief.accounts.flatMap((a) => a.engagements).filter((e) => e.meeting_summary);
-check("get_account_brief returns real meeting_summary content", withSummary.length > 0 && typeof withSummary[0].meeting_summary === "string", withSummary[0]);
-check("get_account_brief returns action_items arrays", Array.isArray(withSummary[0]?.action_items), withSummary[0]);
+check("get_account_brief returns meeting_summary content", withSummary.length > 0 && typeof withSummary[0].meeting_summary === "string");
+check("get_account_brief returns action_items arrays", Array.isArray(withSummary[0]?.action_items));
 
 console.log("\n-- get_engagement_detail: ids already in store (expect 0 API calls) --");
 const sampleIds = brief.accounts.flatMap((a) => a.engagements).slice(0, 2).map((e) => e.engagement_id);
 const detail = await callTool(clientA, "get_engagement_detail", { engagement_ids: sampleIds });
 check("get_engagement_detail resolves cached ids with 0 API calls", detail.api_calls_this_call === 0, detail);
 check("get_engagement_detail returns full records (no errors)", detail.engagements.every((e) => !e.error), detail.engagements.map((e) => e.error || "ok"));
+
+console.log("\n-- get_transcript: selected recorded meeting + synthetic missing id (bounded, no content printed) --");
+const recorded = brief.accounts.flatMap((a) => a.engagements).find((e) => e.recorded);
+check("live account has a recorded meeting for transcript verification", Boolean(recorded));
+let transcriptTexts = [];
+if (recorded) {
+  const transcript = await callTool(clientA, "get_transcript", {
+    engagement_ids: [recorded.engagement_id, "SYNTHETIC_ID_THAT_DOES_NOT_EXIST_00000000"],
+    customer_speakers_only: true,
+    max_segments_per_engagement: 2,
+    max_characters_per_engagement: 1000,
+  });
+  const available = transcript.transcripts[0];
+  const missingTranscript = transcript.transcripts[1];
+  check("live transcript endpoint returns an available transcript", available?.availability === "available");
+  check("live transcript response is bounded to two segments", Array.isArray(available?.segments) && available.segments.length <= 2);
+  check("live transcript segments are customer-classified with provenance", available?.segments?.every((s) => s.speaker?.classification === "customer" && s.engagement_id && s.segment_ref && s.text_kind === "verbatim_transcript"));
+  check("live transcript partial result reports missing/inaccessible separately", missingTranscript?.availability === "not_found_or_inaccessible");
+  transcriptTexts = (available?.segments || []).map((s) => s.verbatim_text).filter(Boolean);
+  const stored = readFileSync(TEST_STORE_PATH, "utf8");
+  check("no returned live transcript text was persisted in the engagement store", transcriptTexts.every((text) => !stored.includes(text)));
+}
 
 console.log("\n-- get_engagement_detail: unknown id (expect a live fetch attempt) --");
 const detailMiss = await callTool(clientA, "get_engagement_detail", { engagement_ids: ["THIS_ID_DOES_NOT_EXIST_00000000"] });
@@ -124,28 +167,30 @@ console.log("\n== Process B: simulated Claude Desktop restart (same store file) 
 let { client: clientB } = await connect();
 
 console.log("\n-- find_account_conversations: RESTART (backfill already done, expect cache hit, 0 API calls) --");
-const restart = await callTool(clientB, "find_account_conversations", { accounts: ["Atlassian"] });
+const restart = await callTool(clientB, "find_account_conversations", { accounts: [LIVE_ACCOUNT] });
 check("restart reads persisted store from disk", restart.store.record_count === lastResult.store.record_count, { restart: restart.store, lastResult: lastResult.store });
 check("restart makes 0 API calls (no re-scan, backfill already persisted complete)", restart.store.api_calls_this_call === 0, restart.store);
 check("restart source is cache", restart.store.source === "cache", restart.store);
 check("restart shows backfill_complete persisted as true", restart.store.backfill_complete === true, restart.store);
 
 console.log("\n-- force_refresh: true (expect a sync even though fresh) --");
-const forced = await callTool(clientB, "find_account_conversations", { accounts: ["Atlassian"], force_refresh: true });
+const forced = await callTool(clientB, "find_account_conversations", { accounts: [LIVE_ACCOUNT], force_refresh: true });
 check("force_refresh triggers a sync", forced.store.source.startsWith("synced"), forced.store);
 check("force_refresh makes >0 API calls", forced.store.api_calls_this_call > 0, forced.store);
 console.log(`  force_refresh sync reason: ${forced.store.source}, api_calls=${forced.store.api_calls_this_call}`);
 
 console.log("\n-- max_age_minutes: 0 (expect auto-sync on next call regardless of freshness) --");
-const staleForced = await callTool(clientB, "find_account_conversations", { accounts: ["Atlassian"], max_age_minutes: 0 });
+const staleForced = await callTool(clientB, "find_account_conversations", { accounts: [LIVE_ACCOUNT], max_age_minutes: 0 });
 check("max_age_minutes:0 triggers a sync", staleForced.store.source.startsWith("synced"), staleForced.store);
 check("max_age_minutes:0 makes >0 API calls", staleForced.store.api_calls_this_call > 0, staleForced.store);
 
 console.log("\n-- confirm normal warm call after all that is cache-only again --");
-const finalWarm = await callTool(clientB, "find_account_conversations", { accounts: ["Atlassian"] });
+const finalWarm = await callTool(clientB, "find_account_conversations", { accounts: [LIVE_ACCOUNT] });
 check("final warm call is cache, 0 API calls", finalWarm.store.source === "cache" && finalWarm.store.api_calls_this_call === 0, finalWarm.store);
 
 await clientB.close();
+cleanup();
+process.removeListener("exit", cleanup);
 
 console.log(`\n${passCount} passed, ${failCount} failed`);
 if (failCount > 0) process.exit(1);
