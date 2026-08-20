@@ -1,0 +1,13 @@
+{
+  "name": "chorusai-mcp-server",
+  "version": "1.2.0",
+  "description": "Local MCP server: account-centric Chorus (ZoomInfo) v3 conversation data for ICP analysis",
+  "type": "module",
+  "bin": { "chorusai-mcp-server": "index.js" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test tests/lib.test.mjs",
+    "test:live": "node tests/jsonrpc-smoke.mjs"
+  },
+  "dependencies": { "@modelcontextprotocol/sdk": "^1.26.0" }
+}
